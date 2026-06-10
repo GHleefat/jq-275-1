@@ -7,6 +7,8 @@ const DIAL_CONFIG = {
   maxAngle: 300,
   stopAngle: 330,
   springBackDuration: 600,
+  minDigitsToAutoCall: 5,
+  autoCallDelay: 2500,
 };
 
 const FUN_NUMBERS: Record<string, { name: string; message: string }> = {
@@ -28,6 +30,7 @@ export default function Home() {
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const dialingRef = useRef(false);
+  const autoCallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const initAudioContext = useCallback(() => {
     if (!audioContextRef.current) {
@@ -37,6 +40,20 @@ export default function Home() {
       audioContextRef.current.resume();
     }
     return audioContextRef.current;
+  }, []);
+
+  const clearAutoCallTimer = useCallback(() => {
+    if (autoCallTimerRef.current) {
+      clearTimeout(autoCallTimerRef.current);
+      autoCallTimerRef.current = null;
+    }
+  }, []);
+
+  const shouldAutoCall = useCallback((number: string) => {
+    if (number.length === 0) return false;
+    if (FUN_NUMBERS[number]) return true;
+    if (number.length >= DIAL_CONFIG.minDigitsToAutoCall) return true;
+    return false;
   }, []);
 
   const playClick = useCallback(() => {
@@ -181,19 +198,21 @@ export default function Home() {
     if (isRotating || isCalling) return;
     if (dialedNumber.length >= 11) return;
 
+    clearAutoCallTimer();
     initAudioContext();
     setIsRotating(true);
     dialingRef.current = true;
 
-    const targetAngle = getNumberAngle(numStr);
-    const finalAngle = targetAngle + 60;
+    const numberAngle = getNumberAngle(numStr);
+    const finalAngle = DIAL_CONFIG.stopAngle - numberAngle;
 
     let currentAngle = 0;
-    const rotateDuration = 400;
+    const rotateDuration = 500;
     const startTime = performance.now();
     const digit = parseInt(numStr);
+    const totalPulses = digit === 0 ? 10 : digit;
 
-    let lastPulseAngle = -1;
+    let lastPulseIndex = -1;
 
     const animate = (now: number) => {
       const elapsed = now - startTime;
@@ -201,10 +220,10 @@ export default function Home() {
       const easeProgress = 1 - Math.pow(1 - progress, 3);
       currentAngle = easeProgress * finalAngle;
 
-      const pulsesReached = Math.floor(currentAngle / 28);
-      if (pulsesReached > lastPulseAngle && pulsesReached <= (digit === 0 ? 10 : digit)) {
+      const pulseIndex = Math.floor((currentAngle / finalAngle) * totalPulses);
+      if (pulseIndex > lastPulseIndex && pulseIndex <= totalPulses) {
         playClick();
-        lastPulseAngle = pulsesReached;
+        lastPulseIndex = pulseIndex;
       }
 
       setCurrentRotation(currentAngle);
@@ -238,22 +257,12 @@ export default function Home() {
       }
     };
     requestAnimationFrame(animate);
-  }, [isRotating, isCalling, dialedNumber, initAudioContext, getNumberAngle, playClick, playPulseDial]);
-
-  useEffect(() => {
-    if (dialedNumber.length > 0 && !isCalling && !isRotating) {
-      const timer = setTimeout(() => {
-        if (!dialingRef.current) {
-          makeCall();
-        }
-      }, 2500);
-      return () => clearTimeout(timer);
-    }
-  }, [dialedNumber, isCalling, isRotating]);
+  }, [isRotating, isCalling, dialedNumber, initAudioContext, getNumberAngle, playClick, playPulseDial, clearAutoCallTimer]);
 
   const makeCall = useCallback(() => {
     if (dialedNumber.length === 0 || isCalling) return;
 
+    clearAutoCallTimer();
     setIsCalling(true);
     setShowMessage(false);
     playDialTone();
@@ -287,13 +296,32 @@ export default function Home() {
         }
       }
     }, 600);
-  }, [dialedNumber, isCalling, playDialTone, playRingTone, playBusyTone]);
+  }, [dialedNumber, isCalling, playDialTone, playRingTone, playBusyTone, clearAutoCallTimer]);
+
+  useEffect(() => {
+    clearAutoCallTimer();
+
+    if (showMessage || isCalling || isRotating) {
+      return;
+    }
+
+    if (dialedNumber.length > 0 && shouldAutoCall(dialedNumber)) {
+      autoCallTimerRef.current = setTimeout(() => {
+        if (!dialingRef.current && !isCalling && !isRotating) {
+          makeCall();
+        }
+      }, DIAL_CONFIG.autoCallDelay);
+    }
+
+    return () => clearAutoCallTimer();
+  }, [dialedNumber, isCalling, isRotating, showMessage, shouldAutoCall, makeCall, clearAutoCallTimer]);
 
   const clearNumber = useCallback(() => {
+    clearAutoCallTimer();
     setDialedNumber('');
     setCallResult(null);
     setShowMessage(false);
-  }, []);
+  }, [clearAutoCallTimer]);
 
   const dialCenter = DIAL_CONFIG.size / 2;
 
@@ -477,7 +505,7 @@ export default function Home() {
       </div>
 
       <p className="mt-4 text-amber-700 text-xs text-center">
-        💡 提示：拨完号码后等待2秒会自动呼叫哦！
+        💡 提示：拨满 {DIAL_CONFIG.minDigitsToAutoCall} 位或拨中趣味号码，等待2秒会自动呼叫哦！
       </p>
     </div>
   );
